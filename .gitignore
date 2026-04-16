@@ -1,0 +1,29 @@
+# Variables d'environnement (sensibles)
+.env
+*.env
+
+# Dépendances
+/node_modules
+/vendor
+#backup
+backups/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Cache Laravel
+/src/storage/*.key
+/src/storage/framework/cache/*
+/src/storage/framework/sessions/*
+/src/storage/framework/views/*
+/src/storage/logs/*
+
+# Docker
+docker/data/
+
+.claude

@@ -1,0 +1,35 @@
+**Log on to codeastro.com for more projects!***
+
+
+**Developed by Parvez Alam**
+
+
+**Check the Website's Post Page for all the Installation Instructions**
+
+
+Before running the project and using the login credentials, make sure to migrate and seed the database. 
+Full installation steps are available on the website’s Post page.
+
+
+---Admin Login Details---
+
+Email   : admin@mail.com
+Password: codeastro.com
+
+
+---Agent Login Details---
+
+Email   : agent@mail.com
+Password: codeastro.com
+
+
+---User Login Details---
+
+Email   : user@mail.com
+Password: codeastro.com
+
+
+
+**Check the Website's Post Page for all the Installation Instructions**
+
+
