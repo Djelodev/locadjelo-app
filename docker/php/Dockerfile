@@ -1,67 +1,76 @@
 # =============================================================
-# Dockerfile pour l'application Laravel LocaDjelo
+# Dockerfile multi-stage pour l'application Laravel LocaDjelo
 # Compétence BC02-CP7 : Gérer des containers
+# Multi-stage build = image finale plus légère et sécurisée
 # =============================================================
 
-# Image de base : PHP 8.2 avec FPM sur Alpine (légère)
-FROM php:7.4-fpm-alpine
+# ==================== STAGE 1 : BUILDER ====================
+# Ce stage installe tout, compile les extensions, télécharge
+# les dépendances. Il ne sera PAS dans l'image finale.
 
-# Métadonnées
-LABEL maintainer="Ange IRIE BI"
-LABEL description="Image PHP-FPM pour LocaDjelo (Laravel)"
+FROM php:7.4-fpm-alpine AS builder
 
-# --- Installation des dépendances système ---
-# Ces paquets sont nécessaires pour compiler les extensions PHP
+# Dépendances de compilation (nécessaires uniquement ici)
 RUN apk add --no-cache \
-    bash \
-    curl \
-    git \
-    unzip \
-    libpng-dev \
-    libjpeg-turbo-dev \
-    freetype-dev \
-    libzip-dev \
-    oniguruma-dev \
-    icu-dev \
-    mysql-client
+    bash curl git unzip \
+    libpng-dev libjpeg-turbo-dev freetype-dev \
+    libzip-dev oniguruma-dev \
+    $PHPIZE_DEPS
 
-# --- Installation des extensions PHP nécessaires à Laravel ---
+# Compilation des extensions PHP pour Laravel
 RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install \
-        pdo \
-        pdo_mysql \
-        mbstring \
-        zip \
-        exif \
-        pcntl \
-        gd \
-        bcmath
+        pdo pdo_mysql mbstring zip exif pcntl gd bcmath
 
-# --- Installation de Composer (gestionnaire de dépendances PHP) ---
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+# Installation de Composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-# --- Création d'un utilisateur non-root pour la sécurité ---
-# Ne JAMAIS faire tourner une application en root dans un container (bonne pratique sécurité)
+# Copie du code source
+WORKDIR /var/www/html
+COPY ./src /var/www/html
+
+# Installation des dépendances PHP (sans les dépendances de dev)
+RUN composer install --no-dev --optimize-autoloader --no-interaction 2>/dev/null || true
+
+# ==================== STAGE 2 : FINAL ====================
+# Ce stage ne contient que le strict nécessaire pour exécuter
+# l'application. Pas d'outils de compilation, pas de git, 
+# pas de composer = image légère et sécurisée.
+
+FROM php:7.4-fpm-alpine AS final
+
+LABEL maintainer="Ange IRIE BI"
+LABEL description="Image production LocaDjelo (Laravel) - multi-stage"
+LABEL version="2.0"
+
+# Uniquement les librairies d'exécution (pas les headers de dev)
+RUN apk add --no-cache \
+    libpng libjpeg-turbo freetype \
+    libzip oniguruma \
+    mysql-client
+
+# Copie des extensions PHP compilées depuis le stage builder
+COPY --from=builder /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
+COPY --from=builder /usr/local/etc/php/conf.d/ /usr/local/etc/php/conf.d/
+
+# Création d'un utilisateur non-root (sécurité)
 RUN addgroup -g 1000 laravel && \
     adduser -u 1000 -G laravel -s /bin/sh -D laravel
 
-# --- Définition du répertoire de travail ---
+# Répertoire de travail
 WORKDIR /var/www/html
 
-# --- Copie du code source de l'application ---
-COPY --chown=laravel:laravel ./src /var/www/html
+# Copie du code source avec les dépendances installées
+COPY --from=builder --chown=laravel:laravel /var/www/html /var/www/html
 
-# --- Installation des dépendances Laravel via Composer ---
-RUN composer install --no-dev --optimize-autoloader --no-interaction || true
-
-# --- Permissions sur les dossiers Laravel ---
+# Permissions sur les dossiers Laravel
 RUN chown -R laravel:laravel /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || true
 
-# --- Basculer sur l'utilisateur non-root ---
+# Basculer sur l'utilisateur non-root
 USER laravel
 
-# --- Exposer le port PHP-FPM ---
+# Port PHP-FPM
 EXPOSE 9000
 
-# --- Commande au démarrage du container ---
+# Commande de démarrage
 CMD ["php-fpm"]
