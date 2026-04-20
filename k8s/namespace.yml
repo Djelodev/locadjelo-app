@@ -1,0 +1,9 @@
+# Namespace dédié à l'application LocaDjelo
+# Isole toutes les ressources du projet
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: locadjelo
+  labels:
+    app: locadjelo
+    project: asd-rncp

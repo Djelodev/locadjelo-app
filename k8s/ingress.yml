@@ -1,0 +1,23 @@
+# =============================================================
+# Ingress pour LocaDjelo — Kubernetes
+# Point d'entrée HTTP depuis internet
+# =============================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: locadjelo-ingress
+  namespace: locadjelo
+  annotations:
+    kubernetes.io/ingress.class: traefik
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: locadjelo-app
+                port:
+                  number: 80
