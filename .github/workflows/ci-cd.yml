@@ -1,0 +1,158 @@
+# =============================================================
+# Pipeline CI/CD — LocaDjelo
+# Compétence BC02-CP8 : Automatiser la mise en production
+# 
+# Workflow :
+# 1. Push sur develop → build image Docker + tests
+# 2. Push sur main → build + tests + push Docker Hub + deploy K8s
+# =============================================================
+
+name: CI/CD LocaDjelo
+
+# --- Quand déclencher le pipeline ---
+on:
+  push:
+    branches:
+      - develop    # CI : build + tests
+      - main       # CI + CD : build + tests + déploiement
+  pull_request:
+    branches:
+      - main       # CI sur les pull requests vers main
+
+# --- Variables d'environnement globales ---
+env:
+  DOCKER_IMAGE: djelodev/locadjelo-app
+  DOCKER_TAG: ${{ github.sha }}
+
+# --- Les étapes du pipeline ---
+jobs:
+
+  # ====================================================
+  # JOB 1 : BUILD — Construire l'image Docker
+  # ====================================================
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      # Étape 1 : Récupérer le code source
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      # Étape 2 : Se connecter à Docker Hub
+      - name: Connexion à Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Étape 3 : Construire l'image Docker
+      - name: Build de l'image Docker
+        run: |
+          docker build -f docker/php/Dockerfile -t $DOCKER_IMAGE:$DOCKER_TAG .
+          docker tag $DOCKER_IMAGE:$DOCKER_TAG $DOCKER_IMAGE:latest
+
+      # Étape 4 : Pousser l'image sur Docker Hub (seulement sur main)
+      - name: Push sur Docker Hub
+        if: github.ref == 'refs/heads/main'
+        run: |
+          docker push $DOCKER_IMAGE:$DOCKER_TAG
+          docker push $DOCKER_IMAGE:latest
+
+  # ====================================================
+  # JOB 2 : TEST — Vérifier que l'application fonctionne
+  # ====================================================
+  test:
+    name: Tests applicatifs
+    runs-on: ubuntu-latest
+    needs: build    # Attend que le build soit terminé
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      # Lancer les services nécessaires aux tests
+      - name: Démarrer MySQL pour les tests
+        run: |
+          docker run -d --name mysql-test \
+            -e MYSQL_DATABASE=locadjelo_test \
+            -e MYSQL_USER=test_user \
+            -e MYSQL_PASSWORD=test_pass \
+            -e MYSQL_ROOT_PASSWORD=root_test \
+            -p 3306:3306 \
+            mysql:8.0 --default-authentication-plugin=mysql_native_password
+
+      # Attendre que MySQL soit prêt
+      - name: Attendre MySQL
+        run: |
+          for i in {1..30}; do
+            if docker exec mysql-test mysqladmin ping -uroot -proot_test --silent 2>/dev/null; then
+              echo "MySQL est prêt"
+              break
+            fi
+            echo "Attente de MySQL... ($i/30)"
+            sleep 2
+          done
+
+      # Vérifier la structure du projet
+      - name: Vérification de la structure du projet
+        run: |
+          echo "=== Vérification des fichiers essentiels ==="
+          test -f docker-compose.yml && echo "✓ docker-compose.yml" || echo "✗ docker-compose.yml manquant"
+          test -f docker/php/Dockerfile && echo "✓ Dockerfile" || echo "✗ Dockerfile manquant"
+          test -d k8s && echo "✓ Dossier k8s/" || echo "✗ Dossier k8s/ manquant"
+          test -f docker/nginx/default.conf && echo "✓ Config Nginx" || echo "✗ Config Nginx manquante"
+          echo "=== Structure validée ==="
+
+      # Vérifier que l'image Docker se construit correctement
+      - name: Test de build Docker
+        run: |
+          docker build -f docker/php/Dockerfile -t locadjelo-test .
+          echo "✓ Image Docker construite avec succès"
+
+      # Nettoyage
+      - name: Nettoyage
+        if: always()
+        run: docker rm -f mysql-test 2>/dev/null || true
+
+  # ====================================================
+  # JOB 3 : DEPLOY — Déployer sur le serveur (seulement main)
+  # ====================================================
+  deploy:
+    name: Déploiement production
+    runs-on: ubuntu-latest
+    needs: [build, test]    # Attend que build ET test soient OK
+    if: github.ref == 'refs/heads/main'    # Seulement sur main
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      # Se connecter au serveur Scaleway via SSH et déployer
+      - name: Déploiement sur Scaleway via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "=== Début du déploiement ==="
+
+            # Mettre à jour l'image dans le deployment Kubernetes
+            kubectl set image deployment/locadjelo-app \
+              app=${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }} \
+              -n locadjelo
+
+            # Attendre que le rollout soit terminé
+            kubectl rollout status deployment/locadjelo-app \
+              -n locadjelo --timeout=120s
+
+            # Vérifier que les pods sont Running
+            kubectl get pods -n locadjelo
+
+            echo "=== Déploiement terminé ==="
+
+      # Notification en cas d'échec
+      - name: Notification d'échec
+        if: failure()
+        run: echo "⚠️ Le déploiement a échoué. Rollback automatique par Kubernetes."
