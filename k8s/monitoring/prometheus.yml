@@ -1,0 +1,168 @@
+# =============================================================
+# Prometheus — Collecteur de métriques
+# Compétence BC03-CP10 : Exploiter une solution de supervision
+# =============================================================
+
+# --- ConfigMap : configuration de Prometheus ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: locadjelo
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s          # Collecte toutes les 15 secondes
+      evaluation_interval: 15s      # Évalue les règles toutes les 15 secondes
+
+    # --- Règles d'alerte ---
+    rule_files:
+      - "/etc/prometheus/alert_rules.yml"
+
+    # --- Cibles à surveiller (les exporters) ---
+    scrape_configs:
+      # Métriques système du serveur (CPU, RAM, disque, réseau)
+      - job_name: 'node'
+        static_configs:
+          - targets: ['node-exporter:9100']
+            labels:
+              instance: 'locadjelo-prod'
+
+      # Métriques de Prometheus lui-même
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+    # --- Connexion à Alertmanager ---
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager:9093']
+
+  alert_rules.yml: |
+    groups:
+      - name: locadjelo_alerts
+        rules:
+          # Alerte 1 : CPU > 80% pendant 5 minutes
+          - alert: HighCpuUsage
+            expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "CPU élevé sur {{ $labels.instance }}"
+              description: "Utilisation CPU > 80% depuis 5 minutes (actuel: {{ $value }}%)"
+
+          # Alerte 2 : RAM > 85%
+          - alert: HighMemoryUsage
+            expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "RAM élevée sur {{ $labels.instance }}"
+              description: "Utilisation mémoire > 85% (actuel: {{ $value }}%)"
+
+          # Alerte 3 : Disque > 80%
+          - alert: DiskSpaceLow
+            expr: (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100 > 80
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Espace disque critique sur {{ $labels.instance }}"
+              description: "Disque utilisé > 80% (actuel: {{ $value }}%)"
+
+          # Alerte 4 : Instance down
+          - alert: InstanceDown
+            expr: up == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Instance {{ $labels.instance }} down"
+              description: "L'instance {{ $labels.instance }} ne répond plus depuis 1 minute"
+
+---
+
+# --- Stockage persistant pour les métriques ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-pvc
+  namespace: locadjelo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+
+# --- Deployment : pod Prometheus ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: locadjelo
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:latest
+          ports:
+            - containerPort: 9090
+          args:
+            - '--config.file=/etc/prometheus/prometheus.yml'
+            - '--storage.tsdb.path=/prometheus'
+            - '--storage.tsdb.retention.time=30d'
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+            - name: prometheus-config
+              mountPath: /etc/prometheus/alert_rules.yml
+              subPath: alert_rules.yml
+            - name: prometheus-storage
+              mountPath: /prometheus
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "300m"
+      volumes:
+        - name: prometheus-config
+          configMap:
+            name: prometheus-config
+        - name: prometheus-storage
+          persistentVolumeClaim:
+            claimName: prometheus-pvc
+
+---
+
+# --- Service : expose Prometheus ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: locadjelo
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+  type: NodePort
